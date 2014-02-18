@@ -1,6 +1,6 @@
 /*
- *  CATCH v1.0 build 26 (master branch)
- *  Generated: 2014-02-11 18:09:37.990814
+ *  CATCH v1.0 build 27 (master branch)
+ *  Generated: 2014-02-18 12:43:04.850717
  *  ----------------------------------------------------------
  *  This file has been merged from multiple headers. Please don't edit it directly
  *  Copyright (c) 2012 Two Blue Cubes Ltd. All rights reserved.
@@ -1503,7 +1503,8 @@ namespace Catch {
     struct ShowDurations { enum OrNot {
         DefaultForReporter,
         Always,
-        Never
+        Never,
+        Threshold
     }; };
 
     struct IConfig : IShared {
@@ -1518,6 +1519,7 @@ namespace Catch {
         virtual bool warnAboutMissingAssertions() const = 0;
         virtual int abortAfter() const = 0;
         virtual ShowDurations::OrNot showDurations() const = 0;
+        virtual double showDurationsThreshold() const = 0;
     };
 }
 
@@ -2868,7 +2870,8 @@ namespace Catch {
             abortAfter( -1 ),
             verbosity( Verbosity::Normal ),
             warnings( WarnAbout::Nothing ),
-            showDurations( ShowDurations::DefaultForReporter )
+            showDurations( ShowDurations::DefaultForReporter ),
+            showDurationsThreshold( 0.0 )
         {}
 
         bool listTests;
@@ -2886,6 +2889,7 @@ namespace Catch {
         Verbosity::Level verbosity;
         WarnAbout::What warnings;
         ShowDurations::OrNot showDurations;
+        double showDurationsThreshold;
 
         std::string reporterName;
         std::string outputFilename;
@@ -2991,6 +2995,7 @@ namespace Catch {
         virtual bool includeSuccessfulResults() const   { return m_data.showSuccessfulTests; }
         virtual bool warnAboutMissingAssertions() const { return m_data.warnings & WarnAbout::NoAssertions; }
         virtual ShowDurations::OrNot showDurations() const { return m_data.showDurations; }
+        virtual double showDurationsThreshold() const { return m_data.showDurationsThreshold; }
 
     private:
         ConfigData m_data;
@@ -3801,6 +3806,10 @@ namespace Catch {
             ? ShowDurations::Always
             : ShowDurations::Never;
     }
+    inline void setShowDurationsThreshold( ConfigData& config, double _showDurationsThreshold ) {
+        config.showDurations = ShowDurations::Threshold;
+        config.showDurationsThreshold = _showDurationsThreshold;
+    }
     inline void loadTestNamesFromFile( ConfigData& config, std::string const& _filename ) {
         std::ifstream f( _filename.c_str() );
         if( !f.is_open() )
@@ -3902,6 +3911,12 @@ namespace Catch {
             .shortOpt( "d")
             .longOpt( "durations" )
             .hint( "yes/no" );
+
+        cli.bind( &setShowDurationsThreshold )
+            .describe( "show test durations only if exceeding this threshold" )
+            .shortOpt( "q")
+            .longOpt( "durations-threshold" )
+            .hint( "seconds" );
 
         cli.bind( &loadTestNamesFromFile )
             .describe( "load test names to run from a file" )
@@ -4126,6 +4141,8 @@ namespace Catch {
             ReconstructedExpression = Yellow,
 
             SecondaryText = LightGrey,
+            DurationText = Yellow,
+
             Headers = White
         };
 
@@ -4357,20 +4374,18 @@ namespace Catch
     struct TestRunStats {
         TestRunStats(   TestRunInfo const& _runInfo,
                         Totals const& _totals,
+                        double _durationInSeconds,
                         bool _aborting )
         :   runInfo( _runInfo ),
             totals( _totals ),
+            durationInSeconds( _durationInSeconds ),
             aborting( _aborting )
-        {}
-        TestRunStats( TestRunStats const& _other )
-        :   runInfo( _other.runInfo ),
-            totals( _other.totals ),
-            aborting( _other.aborting )
         {}
         virtual ~TestRunStats();
 
         TestRunInfo runInfo;
         Totals totals;
+        double durationInSeconds;
         bool aborting;
     };
 
@@ -4753,10 +4768,11 @@ namespace Catch {
             m_context.setConfig( m_config );
             m_context.setResultCapture( this );
             m_reporter->testRunStarting( m_runInfo );
+            m_timer.start();
         }
 
         virtual ~RunContext() {
-            m_reporter->testRunEnded( TestRunStats( m_runInfo, m_totals, aborting() ) );
+            m_reporter->testRunEnded( TestRunStats( m_runInfo, m_totals, m_timer.getElapsedSeconds(), aborting() ) );
             m_context.setRunner( m_prevRunner );
             m_context.setConfig( NULL );
             m_context.setResultCapture( m_prevResultCapture );
@@ -5011,6 +5027,8 @@ namespace Catch {
         Ptr<IConfig const> m_prevConfig;
         AssertionInfo m_lastAssertionInfo;
         std::vector<UnfinishedSections> m_unfinishedSections;
+
+        Timer m_timer;
     };
 
 } // end namespace Catch
@@ -6512,7 +6530,7 @@ namespace Catch {
 namespace Catch {
 
     // These numbers are maintained by a script
-    Version libraryVersion( 1, 0, 26, "master" );
+    Version libraryVersion( 1, 0, 27, "master" );
 }
 
 // #included from: catch_message.hpp
@@ -7723,6 +7741,19 @@ namespace Catch {
 
 namespace Catch {
 
+    static bool shouldPrintDuration(
+        Ptr<IConfig> const& config,
+        double durationInSeconds
+    ) {
+        switch( config->showDurations() ) {
+            case ShowDurations::Always:     return true;
+            case ShowDurations::Threshold:  return (durationInSeconds >= config->showDurationsThreshold());
+            case ShowDurations::DefaultForReporter:
+            case ShowDurations::Never:
+            default:                        return false;
+        }
+    }
+
     struct ConsoleReporter : StreamingReporterBase {
         ConsoleReporter( ReporterConfig const& _config )
         :   StreamingReporterBase( _config ),
@@ -7781,14 +7812,19 @@ namespace Catch {
                     stream << "\nNo assertions in test case";
                 stream << " '" << _sectionStats.sectionInfo.name << "'\n" << std::endl;
             }
+
             if( m_headerPrinted ) {
-                if( m_config->showDurations() == ShowDurations::Always )
+                if( shouldPrintDuration(m_config, _sectionStats.durationInSeconds) ) {
+                    Colour colour( Colour::DurationText );
                     stream << "Completed in " << _sectionStats.durationInSeconds << "s" << std::endl;
+                }
                 m_headerPrinted = false;
             }
             else {
-                if( m_config->showDurations() == ShowDurations::Always )
-                    stream << _sectionStats.sectionInfo.name << " completed in " << _sectionStats.durationInSeconds << "s" << std::endl;
+                if( shouldPrintDuration(m_config, _sectionStats.durationInSeconds) ) {
+                    Colour colour( Colour::DurationText );
+                    stream << " '" << _sectionStats.sectionInfo.name << "' completed in " << _sectionStats.durationInSeconds << "s" << std::endl;
+                }
             }
             StreamingReporterBase::sectionEnded( _sectionStats );
         }
@@ -7810,7 +7846,15 @@ namespace Catch {
             if( m_atLeastOneTestCasePrinted )
                 printTotalsDivider();
             printTotals( _testRunStats.totals );
-            stream << "\n" << std::endl;
+            stream << "\n";
+
+            if( shouldPrintDuration(m_config, _testRunStats.durationInSeconds) ) {
+                Colour colour( Colour::DurationText );
+                stream << "All test runs completed in " << _testRunStats.durationInSeconds << "s\n";
+            }
+
+            stream << std::endl;
+
             StreamingReporterBase::testRunEnded( _testRunStats );
         }
 

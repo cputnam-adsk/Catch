@@ -11,7 +11,7 @@
 #include "catch_test_spec.h"
 #include "catch_context.h"
 #include "catch_interfaces_config.h"
-#include "catch_stream.hpp"
+#include "catch_stream.h"
 
 #include <memory>
 #include <vector>
@@ -30,6 +30,7 @@ namespace Catch {
         :   listTests( false ),
             listTags( false ),
             listReporters( false ),
+            listTestNamesOnly( false ),
             showSuccessfulTests( false ),
             shouldDebugBreak( false ),
             noThrow( false ),
@@ -37,12 +38,14 @@ namespace Catch {
             abortAfter( -1 ),
             verbosity( Verbosity::Normal ),
             warnings( WarnAbout::Nothing ),
-            showDurations( ShowDurations::DefaultForReporter )
+            showDurations( ShowDurations::DefaultForReporter ),
+            showDurationsThreshold( 0.0 )
         {}
 
         bool listTests;
         bool listTags;
         bool listReporters;
+        bool listTestNamesOnly;
 
         bool showSuccessfulTests;
         bool shouldDebugBreak;
@@ -54,6 +57,7 @@ namespace Catch {
         Verbosity::Level verbosity;
         WarnAbout::What warnings;
         ShowDurations::OrNot showDurations;
+        double showDurationsThreshold;
 
         std::string reporterName;
         std::string outputFilename;
@@ -112,6 +116,7 @@ namespace Catch {
         }
 
         bool listTests() const { return m_data.listTests; }
+        bool listTestNamesOnly() const { return m_data.listTestNamesOnly; }
         bool listTags() const { return m_data.listTags; }
         bool listReporters() const { return m_data.listReporters; }
 
@@ -159,7 +164,7 @@ namespace Catch {
         virtual bool includeSuccessfulResults() const   { return m_data.showSuccessfulTests; }
         virtual bool warnAboutMissingAssertions() const { return m_data.warnings & WarnAbout::NoAssertions; }
         virtual ShowDurations::OrNot showDurations() const { return m_data.showDurations; }
-
+        virtual double showDurationsThreshold() const { return m_data.showDurationsThreshold; }
 
     private:
         ConfigData m_data;

@@ -5,13 +5,46 @@
  *  Distributed under the Boost Software License, Version 1.0. (See accompanying
  *  file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
  */
-#ifndef TWOBLUECUBES_CLARA_H_INCLUDED
-#define TWOBLUECUBES_CLARA_H_INCLUDED
 
-#include "catch_text.h" // This will get moved out too
+// Only use header guard if we are not using an outer namespace
+#ifndef CLICHE_CLARA_OUTER_NAMESPACE
+# ifdef TWOBLUECUBES_CLARA_H_INCLUDED
+#  ifndef TWOBLUECUBES_CLARA_H_ALREADY_INCLUDED
+#   define TWOBLUECUBES_CLARA_H_ALREADY_INCLUDED
+#  endif
+# else
+#  define TWOBLUECUBES_CLARA_H_INCLUDED
+# endif
+#endif
+#ifndef TWOBLUECUBES_CLARA_H_ALREADY_INCLUDED
+
+#define CLICHE_TBC_TEXT_FORMAT_OUTER_NAMESPACE Clara
+#include "tbc_text_format.h"
+#undef CLICHE_TBC_TEXT_FORMAT_OUTER_NAMESPACE
+
+#include <string>
+#include <vector>
+#include <map>
+#include <algorithm>
+#include <stdexcept>
+#include <memory>
+
+// Use optional outer namespace
+#ifdef CLICHE_CLARA_OUTER_NAMESPACE
+namespace CLICHE_CLARA_OUTER_NAMESPACE {
+#endif
 
 namespace Clara {
     namespace Detail {
+
+#ifdef CLARA_CONSOLE_WIDTH
+    const unsigned int consoleWidth = CLARA_CONFIG_CONSOLE_WIDTH;
+#else
+    const unsigned int consoleWidth = 80;
+#endif
+
+        using namespace ::Clara::Tbc;
+
         template<typename T> struct RemoveConstRef{ typedef T type; };
         template<typename T> struct RemoveConstRef<T&>{ typedef T type; };
         template<typename T> struct RemoveConstRef<T const&>{ typedef T type; };
@@ -206,7 +239,8 @@ namespace Clara {
         };
 
         void parseIntoTokens( int argc, char const * const * argv, std::vector<Parser::Token>& tokens ) const {
-            for( int i = 1; i < argc; ++i )
+            const std::string doubleDash = "--";
+            for( int i = 1; i < argc && argv[i] != doubleDash; ++i )
                 parseIntoTokens( argv[i] , tokens);
         }
         void parseIntoTokens( std::string arg, std::vector<Parser::Token>& tokens ) const {
@@ -305,6 +339,13 @@ namespace Clara {
             int position;
         };
 
+        // NOTE: std::auto_ptr is deprecated in c++11/c++0x
+#if defined(__cplusplus) && __cplusplus > 199711L
+        typedef std::unique_ptr<Arg> ArgAutoPtr;
+#else
+        typedef std::auto_ptr<Arg> ArgAutoPtr;
+#endif
+
         class ArgBinder {
         public:
             template<typename F>
@@ -329,7 +370,7 @@ namespace Clara {
                     else if( m_arg.isAnyPositional() ) {
                         if( m_cl->m_arg.get() )
                             throw std::logic_error( "Only one unpositional argument can be added" );
-                        m_cl->m_arg = std::auto_ptr<Arg>( new Arg( m_arg ) );
+                        m_cl->m_arg = ArgAutoPtr( new Arg( m_arg ) );
                     }
                     else
                         m_cl->m_options.push_back( m_arg );
@@ -364,16 +405,23 @@ namespace Clara {
 
         CommandLine()
         :   m_boundProcessName( new Detail::NullBinder<ConfigT>() ),
-            m_highestSpecifiedArgPosition( 0 )
+            m_highestSpecifiedArgPosition( 0 ),
+            m_throwOnUnrecognisedTokens( false )
         {}
         CommandLine( CommandLine const& other )
         :   m_boundProcessName( other.m_boundProcessName ),
             m_options ( other.m_options ),
             m_positionalArgs( other.m_positionalArgs ),
-            m_highestSpecifiedArgPosition( other.m_highestSpecifiedArgPosition )
+            m_highestSpecifiedArgPosition( other.m_highestSpecifiedArgPosition ),
+            m_throwOnUnrecognisedTokens( other.m_throwOnUnrecognisedTokens )
         {
             if( other.m_arg.get() )
-                m_arg = std::auto_ptr<Arg>( new Arg( *other.m_arg ) );
+                m_arg = ArgAutoPtr( new Arg( *other.m_arg ) );
+        }
+
+        CommandLine& setThrowOnUnrecognisedTokens( bool shouldThrow = true ) {
+            m_throwOnUnrecognisedTokens = shouldThrow;
+            return *this;
         }
 
         template<typename F>
@@ -386,18 +434,18 @@ namespace Clara {
             m_boundProcessName = Detail::makeBoundField( f );
         }
 
-        void optUsage( std::ostream& os, std::size_t indent = 0, std::size_t width = CATCH_CONFIG_CONSOLE_WIDTH ) const {
+        void optUsage( std::ostream& os, std::size_t indent = 0, std::size_t width = Detail::consoleWidth ) const {
             typename std::vector<Arg>::const_iterator itBegin = m_options.begin(), itEnd = m_options.end(), it;
             std::size_t maxWidth = 0;
             for( it = itBegin; it != itEnd; ++it )
                 maxWidth = (std::max)( maxWidth, it->commands().size() );
 
             for( it = itBegin; it != itEnd; ++it ) {
-                Catch::Text usage( it->commands(), Catch::TextAttributes()
+                Detail::Text usage( it->commands(), Detail::TextAttributes()
                                                         .setWidth( maxWidth+indent )
                                                         .setIndent( indent ) );
                 // !TBD handle longer usage strings
-                Catch::Text desc( it->description, Catch::TextAttributes()
+                Detail::Text desc( it->description, Detail::TextAttributes()
                                                         .setWidth( width - maxWidth -3 ) );
 
                 for( std::size_t i = 0; i < (std::max)( usage.size(), desc.size() ); ++i ) {
@@ -481,6 +529,7 @@ namespace Clara {
 
         std::vector<Parser::Token> populateOptions( std::vector<Parser::Token> const& tokens, ConfigT& config ) const {
             std::vector<Parser::Token> unusedTokens;
+            std::vector<std::string> errors;
             for( std::size_t i = 0; i < tokens.size(); ++i ) {
                 Parser::Token const& token = tokens[i];
                 typename std::vector<Arg>::const_iterator it = m_options.begin(), itEnd = m_options.end();
@@ -492,8 +541,9 @@ namespace Clara {
                             ( token.type == Parser::Token::LongOpt && arg.hasLongName( token.data ) ) ) {
                             if( arg.takesArg() ) {
                                 if( i == tokens.size()-1 || tokens[i+1].type != Parser::Token::Positional )
-                                    throw std::domain_error( "Expected argument to option " + token.data );
-                                arg.boundField.set( config, tokens[++i].data );
+                                    errors.push_back( "Expected argument to option: " + token.data );
+                                else
+                                    arg.boundField.set( config, tokens[++i].data );
                             }
                             else {
                                 arg.boundField.setFlag( config );
@@ -502,11 +552,26 @@ namespace Clara {
                         }
                     }
                     catch( std::exception& ex ) {
-                        throw std::runtime_error( std::string( ex.what() ) + "\n- while parsing: (" + arg.commands() + ")" );
+                        errors.push_back( std::string( ex.what() ) + "\n- while parsing: (" + arg.commands() + ")" );
                     }
                 }
-                if( it == itEnd )
-                    unusedTokens.push_back( token );
+                if( it == itEnd ) {
+                    if( token.type == Parser::Token::Positional || !m_throwOnUnrecognisedTokens )
+                        unusedTokens.push_back( token );
+                    else if( m_throwOnUnrecognisedTokens )
+                        errors.push_back( "unrecognised option: " + token.data );
+                }
+            }
+            if( !errors.empty() ) {
+                std::ostringstream oss;
+                for( std::vector<std::string>::const_iterator it = errors.begin(), itEnd = errors.end();
+                        it != itEnd;
+                        ++it ) {
+                    if( it != errors.begin() )
+                        oss << "\n";
+                    oss << *it;
+                }
+                throw std::runtime_error( oss.str() );
             }
             return unusedTokens;
         }
@@ -543,11 +608,16 @@ namespace Clara {
         Detail::BoundArgFunction<ConfigT> m_boundProcessName;
         std::vector<Arg> m_options;
         std::map<int, Arg> m_positionalArgs;
-        std::auto_ptr<Arg> m_arg;
+        ArgAutoPtr m_arg;
         int m_highestSpecifiedArgPosition;
+        bool m_throwOnUnrecognisedTokens;
     };
 
 } // end namespace Clara
 
+#ifdef CLICHE_CLARA_OUTER_NAMESPACE
+} // end outer namespace
+#endif
 
-#endif // TWOBLUECUBES_CLARA_H_INCLUDED
+#endif // TWOBLUECUBES_CLARA_H_ALREADY_INCLUDED
+
